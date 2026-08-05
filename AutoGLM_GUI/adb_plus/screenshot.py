@@ -8,6 +8,8 @@ Features:
 
 import asyncio
 import base64
+import os
+import struct
 import subprocess
 from dataclasses import dataclass
 from io import BytesIO
@@ -27,6 +29,33 @@ from AutoGLM_GUI.trace import TraceSpan, trace_span
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# Android surface pixel formats returned by `screencap` header.
+# See system/core/libsystem/include/system/graphics-base-v1.0.h
+_FORMAT_RGBA_8888 = 1
+_FORMAT_RGBX_8888 = 2
+_FORMAT_RGB_888 = 3
+_FORMAT_BGRA_8888 = 5
+
+_RAW_PIL_MODE = {
+    _FORMAT_RGBA_8888: ("RGBA", 4),
+    _FORMAT_RGBX_8888: ("RGBX", 4),
+    _FORMAT_RGB_888: ("RGB", 3),
+    _FORMAT_BGRA_8888: ("RGBA", 4),  # decoded then band-swapped below
+}
+
+# PNG compression level for host-side encoding. Lower = faster (larger file).
+# Level 1 is dramatically faster than the default (6) with acceptable size.
+_PNG_COMPRESS_LEVEL = int(os.getenv("AUTOGLM_SCREENSHOT_PNG_LEVEL", "1"))
+
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _raw_capture_enabled() -> bool:
+    """Whether to prefer the faster raw-pixel screencap path."""
+    return (
+        os.getenv("AUTOGLM_SCREENSHOT_RAW", "1").strip().lower() not in _FALSE_VALUES
+    )
 
 
 @dataclass
@@ -67,15 +96,16 @@ def capture_screenshot(
         selection = select_primary_display(device_id=device_id, adb_path=adb_path)
         _set_display_trace_attrs(span, selection)
         display_fallback = False
+        prefer_raw = _raw_capture_enabled()
         attempts = max(1, retries + 1)
         for attempt in range(attempts):
-            data = _try_capture(
+            screenshot = _capture_once(
                 device_id=device_id,
                 adb_path=adb_path,
                 timeout=timeout,
                 display_id=selection.screencap_id if selection else None,
+                prefer_raw=prefer_raw,
             )
-            screenshot = _decode_screenshot(data, device_id)
             if screenshot:
                 span.set_attributes(
                     {
@@ -92,12 +122,13 @@ def capture_screenshot(
                 clear_display_selection_cache(device_id=device_id, adb_path=adb_path)
                 display_fallback = True
                 selection = None
-                fallback_data = _try_capture(
+                screenshot = _capture_once(
                     device_id=device_id,
                     adb_path=adb_path,
                     timeout=timeout,
+                    display_id=None,
+                    prefer_raw=prefer_raw,
                 )
-                screenshot = _decode_screenshot(fallback_data, device_id)
                 if screenshot:
                     span.set_attributes(
                         {
@@ -116,24 +147,71 @@ def capture_screenshot(
         return _fallback_screenshot()
 
 
-def _try_capture(
+def _capture_once(
     device_id: str | None,
     adb_path: str,
     timeout: int,
-    display_id: str | None = None,
-) -> bytes | None:
-    """Run exec-out screencap and return raw bytes or None on failure.
+    display_id: str | None,
+    prefer_raw: bool,
+) -> Screenshot | None:
+    """Attempt a single capture, preferring the fast raw path with PNG fallback."""
+    if prefer_raw:
+        raw_data = _try_capture(
+            device_id=device_id,
+            adb_path=adb_path,
+            timeout=timeout,
+            display_id=display_id,
+            raw=True,
+        )
+        screenshot = _decode_raw_screenshot(raw_data, device_id)
+        if screenshot:
+            return screenshot
 
-    Raises:
-        DeviceNotAvailableError: When device is not found or offline.
-    """
+    png_data = _try_capture(
+        device_id=device_id,
+        adb_path=adb_path,
+        timeout=timeout,
+        display_id=display_id,
+        raw=False,
+    )
+    return _decode_screenshot(png_data, device_id)
+
+
+def _build_screencap_cmd(
+    device_id: str | None,
+    adb_path: str,
+    display_id: str | None,
+    raw: bool,
+) -> list[str]:
     cmd: list[str] = [adb_path]
     if device_id:
         cmd.extend(["-s", device_id])
     cmd.extend(["exec-out", "screencap"])
     if display_id:
         cmd.extend(["-d", display_id])
-    cmd.append("-p")
+    if not raw:
+        # `-p` makes the device encode PNG (slow on-device CPU work).
+        # Raw mode omits `-p` to skip on-device encoding entirely.
+        cmd.append("-p")
+    return cmd
+
+
+def _try_capture(
+    device_id: str | None,
+    adb_path: str,
+    timeout: int,
+    display_id: str | None = None,
+    raw: bool = False,
+) -> bytes | None:
+    """Run exec-out screencap and return raw bytes or None on failure.
+
+    When ``raw`` is True, captures raw pixel data (no on-device PNG encoding),
+    which is significantly faster on the device side.
+
+    Raises:
+        DeviceNotAvailableError: When device is not found or offline.
+    """
+    cmd = _build_screencap_cmd(device_id, adb_path, display_id, raw)
 
     try:
         with trace_span(
@@ -142,6 +220,7 @@ def _try_capture(
                 "device_id": device_id,
                 "timeout": timeout,
                 "display_id": display_id,
+                "raw": raw,
             },
         ):
             result = subprocess.run(
@@ -160,7 +239,7 @@ def _try_capture(
                     f"Device {device_id} not found or offline"
                 )
             return None
-        # stdout should hold the PNG data
+        # stdout holds PNG data (raw=False) or raw pixel data (raw=True)
         return result.stdout
     except DeviceNotAvailableError:
         raise  # Re-raise to caller
@@ -186,15 +265,16 @@ async def capture_screenshot_async(
         )
         _set_display_trace_attrs(span, selection)
         display_fallback = False
+        prefer_raw = _raw_capture_enabled()
         attempts = max(1, retries + 1)
         for attempt in range(attempts):
-            data = await _try_capture_async(
+            screenshot = await _capture_once_async(
                 device_id=device_id,
                 adb_path=adb_path,
                 timeout=timeout,
                 display_id=selection.screencap_id if selection else None,
+                prefer_raw=prefer_raw,
             )
-            screenshot = await _decode_screenshot_async(data, device_id)
             if screenshot:
                 span.set_attributes(
                     {
@@ -211,12 +291,13 @@ async def capture_screenshot_async(
                 clear_display_selection_cache(device_id=device_id, adb_path=adb_path)
                 display_fallback = True
                 selection = None
-                fallback_data = await _try_capture_async(
+                screenshot = await _capture_once_async(
                     device_id=device_id,
                     adb_path=adb_path,
                     timeout=timeout,
+                    display_id=None,
+                    prefer_raw=prefer_raw,
                 )
-                screenshot = await _decode_screenshot_async(fallback_data, device_id)
                 if screenshot:
                     span.set_attributes(
                         {
@@ -235,20 +316,48 @@ async def capture_screenshot_async(
         return _fallback_screenshot()
 
 
+async def _capture_once_async(
+    device_id: str | None,
+    adb_path: str,
+    timeout: int,
+    display_id: str | None,
+    prefer_raw: bool,
+) -> Screenshot | None:
+    """Async single capture, preferring the fast raw path with PNG fallback."""
+    if prefer_raw:
+        raw_data = await _try_capture_async(
+            device_id=device_id,
+            adb_path=adb_path,
+            timeout=timeout,
+            display_id=display_id,
+            raw=True,
+        )
+        screenshot = await _decode_raw_screenshot_async(raw_data, device_id)
+        if screenshot:
+            return screenshot
+
+    png_data = await _try_capture_async(
+        device_id=device_id,
+        adb_path=adb_path,
+        timeout=timeout,
+        display_id=display_id,
+        raw=False,
+    )
+    return await _decode_screenshot_async(png_data, device_id)
+
+
 async def _try_capture_async(
     device_id: str | None,
     adb_path: str,
     timeout: int,
     display_id: str | None = None,
+    raw: bool = False,
 ) -> bytes | None:
-    """Async exec-out screencap helper."""
-    cmd: list[str] = [adb_path]
-    if device_id:
-        cmd.extend(["-s", device_id])
-    cmd.extend(["exec-out", "screencap"])
-    if display_id:
-        cmd.extend(["-d", display_id])
-    cmd.append("-p")
+    """Async exec-out screencap helper.
+
+    When ``raw`` is True, captures raw pixel data (no on-device PNG encoding).
+    """
+    cmd = _build_screencap_cmd(device_id, adb_path, display_id, raw)
 
     try:
         with trace_span(
@@ -257,6 +366,7 @@ async def _try_capture_async(
                 "device_id": device_id,
                 "timeout": timeout,
                 "display_id": display_id,
+                "raw": raw,
             },
         ):
             if is_windows():
@@ -313,6 +423,74 @@ def _is_valid_png(data: bytes) -> bool:
     )
 
 
+def _parse_raw_header(data: bytes) -> tuple[int, int, int, int] | None:
+    """Parse the `screencap` raw header.
+
+    Layout (little-endian uint32): width, height, format, and on Android 9+
+    an extra colorSpace field. Returns (width, height, format, header_len)
+    or None if the header does not match the payload size.
+    """
+    if len(data) < 12:
+        return None
+
+    width, height, pixel_format = struct.unpack_from("<III", data, 0)
+    mode_info = _RAW_PIL_MODE.get(pixel_format)
+    if mode_info is None or width <= 0 or height <= 0:
+        return None
+
+    _, bpp = mode_info
+    expected = width * height * bpp
+
+    # Header may be 12 (legacy) or 16 bytes (Android 9+ with colorSpace).
+    for header_len in (16, 12):
+        if len(data) - header_len == expected:
+            return width, height, pixel_format, header_len
+    return None
+
+
+def _encode_png_base64(image: Image.Image) -> str:
+    """Encode a PIL image to base64 PNG using a fast compression level."""
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", compress_level=_PNG_COMPRESS_LEVEL)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def _decode_raw_screenshot(
+    data: bytes | None, device_id: str | None
+) -> Screenshot | None:
+    """Decode raw `screencap` pixel data into a PNG-backed Screenshot."""
+    if not data:
+        return None
+
+    parsed = _parse_raw_header(data)
+    if parsed is None:
+        return None
+
+    width, height, pixel_format, header_len = parsed
+    mode, _ = _RAW_PIL_MODE[pixel_format]
+
+    try:
+        image = Image.frombuffer(
+            mode,
+            (width, height),
+            data[header_len:],
+            "raw",
+            mode,
+            0,
+            1,
+        )
+        if pixel_format == _FORMAT_BGRA_8888:
+            b, g, r, a = image.split()
+            image = Image.merge("RGBA", (r, g, b, a))
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGB")
+        base64_data = _encode_png_base64(image)
+        return Screenshot(base64_data=base64_data, width=width, height=height)
+    except Exception as exc:
+        logger.debug("Failed to decode raw screenshot for %s: %s", device_id, exc)
+        return None
+
+
 def _decode_screenshot(data: bytes | None, device_id: str | None) -> Screenshot | None:
     if not data or not _is_valid_png(data):
         return None
@@ -325,6 +503,13 @@ def _decode_screenshot(data: bytes | None, device_id: str | None) -> Screenshot 
     except Exception as exc:
         logger.debug("Failed to decode screenshot PNG for %s: %s", device_id, exc)
         return None
+
+
+async def _decode_raw_screenshot_async(
+    data: bytes | None,
+    device_id: str | None,
+) -> Screenshot | None:
+    return await asyncio.to_thread(_decode_raw_screenshot, data, device_id)
 
 
 async def _decode_screenshot_async(

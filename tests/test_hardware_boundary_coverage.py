@@ -887,6 +887,7 @@ def test_screenshot_uses_display_id_and_falls_back(
 ) -> None:
     selection = DisplaySelection("0", "111", 1200, 2608, "test")
     monkeypatch.setattr(screenshot, "select_primary_display", lambda *a, **k: selection)
+    monkeypatch.setattr(screenshot, "_raw_capture_enabled", lambda: False)
 
     cleared: list[tuple[str | None, str]] = []
     monkeypatch.setattr(
@@ -920,6 +921,7 @@ def test_screenshot_async_uses_display_id(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(screenshot, "select_primary_display_async", async_display)
     monkeypatch.setattr(screenshot, "is_windows", lambda: True)
+    monkeypatch.setattr(screenshot, "_raw_capture_enabled", lambda: False)
 
     commands: list[list[str]] = []
 
@@ -933,6 +935,42 @@ def test_screenshot_async_uses_display_id(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert captured.width == 1
     assert commands[0][-4:] == ["screencap", "-d", "111", "-p"]
+
+
+def test_screenshot_raw_mode_skips_png_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import struct
+
+    selection = DisplaySelection("0", None, 4, 4, "test")
+    monkeypatch.setattr(screenshot, "select_primary_display", lambda *a, **k: selection)
+    monkeypatch.setattr(screenshot, "_raw_capture_enabled", lambda: True)
+
+    width, height = 2, 2
+    pixels = bytes(
+        [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255]
+    )
+    raw_payload = struct.pack(
+        "<IIII", width, height, screenshot._FORMAT_RGBA_8888, 0
+    ) + pixels
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, raw_payload, b"")
+
+    monkeypatch.setattr(screenshot.subprocess, "run", fake_run)
+    captured = screenshot.capture_screenshot("serial", retries=0)
+
+    # Raw mode must not pass "-p" (no on-device PNG encoding).
+    assert commands[0][-1] == "screencap"
+    assert "-p" not in commands[0]
+    assert captured.width == width
+    assert captured.height == height
+    # Output is still a valid PNG for downstream consumers.
+    png_bytes = base64.b64decode(captured.base64_data)
+    assert png_bytes.startswith(screenshot.PNG_SIGNATURE)
 
 
 def test_mdns_pair_touch_version_and_keyboard(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -880,3 +880,18 @@ AutoGLM-GUI 打包了 ADB Keyboard APK (`com.android.adbkeyboard`)，该组件�
 ## 🙏 致谢
 
 本项目基于 [Open-AutoGLM](https://github.com/zai-org/Open-AutoGLM) 构建，感谢 zai-org 团队在 AutoGLM 上的卓越工作。
+
+
+从源码开发启动（推荐用于本项目开发）
+项目使用 uv 管理依赖，需要 Python 3.11+：
+
+# 1. 安装依赖
+uv sync
+
+# 2. 构建前端（首次必须执行）
+uv run python scripts/build.py
+
+# 3. 启动服务
+uv run autoglm-gui --base-url http://localhost:8000/v1
+
+启动后访问 http://localhost:8000
