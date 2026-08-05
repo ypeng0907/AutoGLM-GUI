@@ -215,6 +215,8 @@ export const en = {
     increaseWidth: 'Increase width',
     showWidthControls: 'Show width controls',
     hideWidthControls: 'Hide width controls',
+    hideScreen: 'Hide screen',
+    showScreen: 'Show screen',
     videoUnavailableWarning: 'Video streaming is unavailable',
     requireHttpsOrLocalhost:
       'Video streaming requires HTTPS or localhost. Consider downloading the desktop app for full functionality.',

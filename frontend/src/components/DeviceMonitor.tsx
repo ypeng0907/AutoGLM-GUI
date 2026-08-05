@@ -20,6 +20,8 @@ import {
   CheckCircle2,
   Loader2,
   X,
+  EyeOff,
+  Smartphone,
 } from 'lucide-react';
 import {
   shouldShowWebCodecsWarning,
@@ -65,6 +67,10 @@ export function DeviceMonitor({
   );
   const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [showWebCodecsWarning, setShowWebCodecsWarning] = useState(false);
+  const [screenHidden, setScreenHidden] = useLocalStorage<boolean>(
+    'device-monitor-hidden',
+    false
+  );
 
   const videoStreamRef = useRef<{ close: () => void } | null>(null);
   const feedbackTimeoutRef = useRef<number | null>(null);
@@ -179,6 +185,26 @@ export function DeviceMonitor({
   const widthStyle =
     typeof panelWidth === 'number' ? `${panelWidth}px` : 'auto';
 
+  // Collapsed view when the screen is hidden
+  if (screenHidden) {
+    return (
+      <Card
+        className={`flex-shrink-0 relative min-h-0 overflow-hidden bg-background flex items-center justify-center ${className}`}
+        style={{ width: 48, minWidth: 48 }}
+      >
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setScreenHidden(false)}
+          className="h-9 w-9 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
+          title={t.deviceMonitor?.showScreen || 'Show screen'}
+        >
+          <Smartphone className="w-4 h-4" />
+        </Button>
+      </Card>
+    );
+  }
+
   return (
     <Card
       className={`flex-shrink-0 relative min-h-0 overflow-hidden bg-background ${className}`}
@@ -280,6 +306,17 @@ export function DeviceMonitor({
             ) : (
               <ChevronLeft className="w-4 h-4" />
             )}
+          </Button>
+
+          {/* Hide screen button - always visible in top-right */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setScreenHidden(true)}
+            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
+            title={t.deviceMonitor?.hideScreen || 'Hide screen'}
+          >
+            <EyeOff className="w-4 h-4" />
           </Button>
         </div>
       </div>

@@ -208,6 +208,8 @@ export const zh = {
     increaseWidth: '增大宽度',
     showWidthControls: '显示宽度控制',
     hideWidthControls: '隐藏宽度控制',
+    hideScreen: '隐藏画面',
+    showScreen: '显示画面',
     videoUnavailableWarning: '视频流不可用',
     requireHttpsOrLocalhost:
       '视频流需要 HTTPS 或 localhost 环境。建议下载桌面应用以获得完整功能。',
