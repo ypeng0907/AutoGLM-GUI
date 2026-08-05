@@ -279,25 +279,6 @@ class AsyncAgentBase(ABC):
                                 }
                                 return
 
-                            if repeated_action_count >= WATCHDOG_REPEATED_ACTION_LIMIT:
-                                stream_span.set_attributes(
-                                    {
-                                        "success": False,
-                                        "steps": self._step_count,
-                                        "error_kind": "watchdog_repeated_actions",
-                                    }
-                                )
-                                yield {
-                                    "type": "done",
-                                    "data": {
-                                        "message": "Watchdog stopped task after repeated actions",
-                                        "steps": self._step_count,
-                                        "success": False,
-                                        "stop_reason": "watchdog_repeated_actions",
-                                    },
-                                }
-                                return
-
                             if no_progress_count >= WATCHDOG_NO_PROGRESS_LIMIT:
                                 stream_span.set_attributes(
                                     {
