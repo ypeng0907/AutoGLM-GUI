@@ -206,7 +206,7 @@ def _detect_repeated_actions(steps: list[dict[str, str]]) -> str | None:
             repeat += 1
         else:
             break
-    if repeat >= 3:
+    if repeat >= 30:
         return f"视觉模型连续 {repeat} 次执行了相同动作「{last}」，可能已陷入死循环或滑动/点击未生效。"
     return None
 
@@ -357,7 +357,7 @@ async def chat(device_id: str, message: str) -> str:
     from AutoGLM_GUI.phone_agent_manager import PhoneAgentManager
     from AutoGLM_GUI.prompts import MCP_SYSTEM_PROMPT_ZH
 
-    mcp_max_steps = 5
+    mcp_max_steps = 30
 
     with trace_span(
         "layered.tool.chat",
