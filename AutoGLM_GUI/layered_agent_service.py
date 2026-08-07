@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import re
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -138,6 +139,61 @@ _active_runs_lock = threading.Lock()
 _client: AsyncOpenAI | None = None
 _agent: Agent[Any] | None = None
 _cached_config_hash: str | None = None
+
+
+def _summarize_execution_history(context: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """将 Agent 的原始上下文提炼为精简的执行动作历史。
+
+    过滤掉冗长的 system prompt 和截图 base64 数据，只保留每一步视觉模型
+    实际执行的动作（从 assistant 的 <answer> 中提取），便于上层规划模型
+    快速理解失败原因，而不是被原始 dump 淹没。
+    """
+    steps: list[dict[str, str]] = []
+    step_index = 0
+    for message in context:
+        if message.get("role") != "assistant":
+            continue
+
+        raw = message.get("content", "")
+        if isinstance(raw, list):
+            raw = " ".join(
+                part.get("text", "")
+                for part in raw
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        text = str(raw).strip()
+
+        step_index += 1
+        think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+        answer_match = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL)
+        think = (think_match.group(1).strip() if think_match else "").strip()
+        action = (answer_match.group(1).strip() if answer_match else text).strip()
+
+        steps.append(
+            {
+                "step": str(step_index),
+                "action": action or "(未解析到有效动作)",
+                **({"think": think} if think else {}),
+            }
+        )
+    return steps
+
+
+def _detect_repeated_actions(steps: list[dict[str, str]]) -> str | None:
+    """检测执行历史中是否存在连续重复动作（陷入死循环的典型特征）。"""
+    actions = [s.get("action", "") for s in steps if s.get("action")]
+    if len(actions) < 3:
+        return None
+    last = actions[-1]
+    repeat = 1
+    for act in reversed(actions[:-1]):
+        if act == last:
+            repeat += 1
+        else:
+            break
+    if repeat >= 3:
+        return f"视觉模型连续 {repeat} 次执行了相同动作「{last}」，可能已陷入死循环或滑动/点击未生效。"
+    return None
 
 
 def _get_or_create_session(session_id: str) -> SQLiteSession:
@@ -320,14 +376,38 @@ async def chat(device_id: str, message: str) -> str:
                             "error_kind": "max_steps",
                         }
                     )
-                    context_json = json.dumps(
-                        agent.context, ensure_ascii=False, indent=2
-                    )
+                    history = _summarize_execution_history(agent.context)
+                    history_lines = "\n".join(
+                        f"  第{s['step']}步: {s['action']}" for s in history
+                    ) or "  (无有效动作记录)"
+
+                    diagnosis = _detect_repeated_actions(history)
+                    hints = [
+                        "将任务拆分为更小的原子子任务后重试",
+                        "确认目标页面/元素确实存在，必要时补充更明确的操作指引",
+                    ]
+                    if diagnosis:
+                        hints.insert(
+                            0,
+                            "避免让视觉模型重复同一动作，改为提供不同的定位方式或改用其他交互步骤",
+                        )
+                    suggestion = "\n".join(f"  -{h}" for h in hints)
+
+                    result_lines = [
+                        f"⚠️ 已达到最大步数限制（{mcp_max_steps} 步），子任务未完成。",
+                    ]
+                    if diagnosis:
+                        result_lines.append(f"\n诊断: {diagnosis}")
+                    result_lines.append(f"\n视觉模型执行动作:\n{history_lines}")
+                    result_lines.append(f"\n建议:\n{suggestion}")
+
                     return json.dumps(
                         {
-                            "result": f"⚠️ 已达到最大步数限制（{mcp_max_steps}步）。视觉模型可能遇到了困难，任务未完成。\n\n执行历史:\n{context_json}\n\n建议: 请重新规划任务或将其拆分为更小的子任务。",
+                            "result": "\n".join(result_lines),
                             "steps": mcp_max_steps,
                             "success": False,
+                            "reason": "max_steps",
+                            "history": history,
                         },
                         ensure_ascii=False,
                     )
