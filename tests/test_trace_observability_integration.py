@@ -190,7 +190,7 @@ def test_layered_task_trace_observability_covers_debug_surface(
     store = TaskStore(tmp_path / "tasks.db")
     manager = TaskManager(store)
 
-    def fake_start_run(
+    async def fake_start_run(
         *,
         task_id: str,
         session_id: str,

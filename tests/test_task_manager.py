@@ -269,7 +269,7 @@ def test_execute_layered_chat_counts_inner_steps_and_skips_legacy_history(
                 "payload": {"content": "已完成整理", "success": True},
             }
 
-    def fake_start_run(
+    async def fake_start_run(
         *, task_id: str, session_id: str, message: str, device_id: str = ""
     ) -> FakeRun:
         return FakeRun()
@@ -339,7 +339,7 @@ def test_execute_layered_task_reraises_non_user_cancellation(
             raise asyncio.CancelledError
             yield
 
-    def fake_start_run(
+    async def fake_start_run(
         *, task_id: str, session_id: str, message: str, device_id: str = ""
     ) -> FakeRun:
         return FakeRun()

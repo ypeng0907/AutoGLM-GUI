@@ -729,7 +729,7 @@ class TaskManager:
                     trace_id=trace_id,
                     source=metrics_source,
                 )
-                run = start_run(
+                run = await start_run(
                     task_id=task_id,
                     session_id=session_id,
                     message=str(task["input_text"]),

@@ -140,6 +140,21 @@ _client: AsyncOpenAI | None = None
 _agent: Agent[Any] | None = None
 _cached_config_hash: str | None = None
 
+# 单个 chat 工具返回文本进入 planner 上下文的最大字符数。
+# 超长的子任务执行摘要会随轮次累积, 逐步撑大发给决策模型的上下文,
+# 最终触发模型服务端内存守护 (process memory limit exceeded)。
+_MAX_TOOL_RESULT_CHARS = 4000
+
+
+def _truncate_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """截断进入规划模型上下文的工具结果文本, 避免上下文无限膨胀。"""
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 200]
+    tail = text[-200:]
+    omitted = len(text) - limit
+    return f"{head}\n...(已省略 {omitted} 字符)...\n{tail}"
+
 
 def _summarize_execution_history(context: list[dict[str, Any]]) -> list[dict[str, str]]:
     """将 Agent 的原始上下文提炼为精简的执行动作历史。
@@ -194,6 +209,42 @@ def _detect_repeated_actions(steps: list[dict[str, str]]) -> str | None:
     if repeat >= 3:
         return f"视觉模型连续 {repeat} 次执行了相同动作「{last}」，可能已陷入死循环或滑动/点击未生效。"
     return None
+
+
+# planner 会话历史保留的最大条目数 (滑动窗口)。
+# SQLiteSession 会把每一轮的工具调用/工具输出/助手消息全量累积并整体发给
+# 决策模型, 长任务下上下文会无限膨胀, 触发模型服务端内存守护
+# (process memory limit exceeded)。修剪历史仅保留最近若干条, 可有效控制上下文体积。
+_MAX_SESSION_ITEMS = 60
+
+
+async def _trim_session_history(
+    session: SQLiteSession, max_items: int = _MAX_SESSION_ITEMS
+) -> None:
+    """对 planner 会话历史做滑动窗口修剪, 仅保留最近 ``max_items`` 条。
+
+    通过整体读取历史、清空后回写最近条目的方式实现; 避免历史随任务轮次
+    线性增长而撑爆决策模型上下文。修剪失败不应阻断主流程。
+    """
+    try:
+        items = await session.get_items()
+    except Exception as exc:  # pragma: no cover - 修剪失败不应阻断主流程
+        logger.warning(f"[LayeredAgent] Failed to read session for trim: {exc}")
+        return
+
+    if len(items) <= max_items:
+        return
+
+    keep = items[-max_items:]
+    try:
+        await session.clear_session()
+        await session.add_items(keep)
+        logger.info(
+            f"[LayeredAgent] Trimmed session {session.session_id}: "
+            f"{len(items)} -> {len(keep)} items"
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"[LayeredAgent] Failed to trim session history: {exc}")
 
 
 def _get_or_create_session(session_id: str) -> SQLiteSession:
@@ -401,13 +452,16 @@ async def chat(device_id: str, message: str) -> str:
                     result_lines.append(f"\n视觉模型执行动作:\n{history_lines}")
                     result_lines.append(f"\n建议:\n{suggestion}")
 
+                    # 注意: 不要把完整 history 数组回传给规划模型。
+                    # 该工具返回体会被 SQLiteSession 全量累积进 planner 上下文,
+                    # 逐轮膨胀会触发模型服务端内存守护 (process memory limit exceeded)。
+                    # history 明细仅用于 trace/诊断, 精简后的可读摘要已包含在 result 中。
                     return json.dumps(
                         {
-                            "result": "\n".join(result_lines),
+                            "result": _truncate_tool_result("\n".join(result_lines)),
                             "steps": mcp_max_steps,
                             "success": False,
                             "reason": "max_steps",
-                            "history": history,
                         },
                         ensure_ascii=False,
                     )
@@ -415,7 +469,7 @@ async def chat(device_id: str, message: str) -> str:
                 tool_span.set_attributes({"success": True, "steps": steps})
                 return json.dumps(
                     {
-                        "result": result,
+                        "result": _truncate_tool_result(str(result)),
                         "steps": steps,
                         "success": True,
                     },
@@ -894,7 +948,7 @@ class LayeredTaskRun:
         return content
 
 
-def start_run(
+async def start_run(
     *,
     task_id: str,
     session_id: str,
@@ -903,6 +957,11 @@ def start_run(
 ) -> LayeredTaskRun:
     agent = _ensure_agent()
     session = _get_or_create_session(session_id)
+
+    # 在构建 Runner 之前修剪历史, 防止长任务下 planner 上下文无限膨胀
+    # 而触发决策模型服务端内存守护 (process memory limit exceeded)。
+    await _trim_session_history(session)
+
     effective_config = config_manager.get_effective_config()
     max_turns = effective_config.layered_max_turns
     resolved_max_turns = max_turns if max_turns is not None else 100000
