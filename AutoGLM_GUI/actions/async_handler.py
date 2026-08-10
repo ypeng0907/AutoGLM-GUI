@@ -1,6 +1,7 @@
 """Async action handler for executing phone operations."""
 
 import asyncio
+import random
 from typing import Any
 from collections.abc import Callable
 
@@ -131,6 +132,7 @@ class AsyncActionHandler:
             "Note": self._handle_note,
             "Call_API": self._handle_call_api,
             "Interact": self._handle_interact,
+            "Browse_Note": self._handle_browse_note,
         }
         return handlers.get(action_name)
 
@@ -312,6 +314,68 @@ class AsyncActionHandler:
         return ActionResult(
             True, False, message="INTERACT_REQUIRED: User interaction required"
         )
+
+    # === Composite Actions ===
+    BROWSE_NOTE_SWIPE_COUNT = 10
+    BROWSE_NOTE_REPEAT_COUNT = 3
+    # 每次点击/滑动坐标的随机抖动范围（像素，±该值）
+    BROWSE_NOTE_JITTER_PX = 8
+    # 向左滑动相对坐标（0-1000）：从屏幕右侧滑到左侧，保持在垂直中部
+    _BROWSE_SWIPE_START = [850, 500]
+    _BROWSE_SWIPE_END = [150, 500]
+
+    def _jitter(
+        self, x: int, y: int, width: int, height: int, amount: int
+    ) -> tuple[int, int]:
+        """对绝对像素坐标加 ±amount 的随机偏移，并 clamp 到屏幕范围内。"""
+        jx = x + random.randint(-amount, amount)
+        jy = y + random.randint(-amount, amount)
+        jx = max(0, min(jx, width - 1))
+        jy = max(0, min(jy, height - 1))
+        return jx, jy
+
+    async def _handle_browse_note(
+        self, action: dict[str, Any], width: int, height: int
+    ) -> ActionResult:
+        """浏览笔记详情复合动作：1 次 Tap 打开 + N 次向左 Swipe 滑动图片 + 1 次 Back 返回。
+
+        参数:
+            element: 笔记入口的相对坐标 [x, y]（必填），用于打开笔记详情。
+            swipe_count: 向左滑动次数，可选，默认 10。
+        """
+        element = action.get("element")
+        if not element:
+            return ActionResult(False, False, "No element coordinates")
+
+        swipe_count = action.get("swipe_count", self.BROWSE_NOTE_SWIPE_COUNT)
+        try:
+            swipe_count = int(swipe_count)
+        except (TypeError, ValueError):
+            swipe_count = self.BROWSE_NOTE_SWIPE_COUNT
+
+        tap_x, tap_y = self._convert_relative_to_absolute(element, width, height)
+        start_x, start_y = self._convert_relative_to_absolute(
+            self._BROWSE_SWIPE_START, width, height
+        )
+        end_x, end_y = self._convert_relative_to_absolute(
+            self._BROWSE_SWIPE_END, width, height
+        )
+        jitter = self.BROWSE_NOTE_JITTER_PX
+
+        # 整套「打开 + 左滑 + 返回」流程循环 REPEAT 次
+        for _ in range(self.BROWSE_NOTE_REPEAT_COUNT):
+            # 1) Tap 打开笔记（坐标加随机抖动）
+            jx, jy = self._jitter(tap_x, tap_y, width, height, jitter)
+            await self.device.tap(jx, jy)
+            # 2) 向左 Swipe 滑动图片（起止坐标各自加随机抖动）
+            for _ in range(swipe_count):
+                sx, sy = self._jitter(start_x, start_y, width, height, jitter)
+                ex, ey = self._jitter(end_x, end_y, width, height, jitter)
+                await self.device.swipe(sx, sy, ex, ey)
+            # 3) Back 返回
+            await self.device.back()
+
+        return ActionResult(True, False)
 
     @staticmethod
     def _default_confirmation(message: str) -> bool:

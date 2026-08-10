@@ -7,7 +7,16 @@ from typing_extensions import TypedDict
 
 ActionMetadata = Literal["do", "finish", "takeover"]
 PhoneActionType = Literal[
-    "Tap", "Swipe", "Type", "Launch", "Wait", "Back", "Home", "Long Press", "Double Tap"
+    "Tap",
+    "Swipe",
+    "Type",
+    "Launch",
+    "Wait",
+    "Back",
+    "Home",
+    "Long Press",
+    "Double Tap",
+    "Browse_Note",
 ]
 MAIActionType = Literal[
     "click",
@@ -39,6 +48,7 @@ class PhoneAgentAction(TypedDict, total=False):
     end: list[int]
     duration: str
     message: str
+    swipe_count: int
 
 
 class MAIAction(TypedDict, total=False):

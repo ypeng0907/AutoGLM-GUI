@@ -49,6 +49,8 @@ SYSTEM_PROMPT = (
     Home是回到系统桌面的操作，相当于按下 Android 主屏幕按钮。使用此操作可退出当前应用并返回启动器，或从已知状态启动新任务。此操作完成后，您将自动收到结果状态的截图。
 - do(action=\"Wait\", duration=\"x seconds\")  
     等待页面加载，x为需要等待多少秒。
+- do(action=\"Browse_Note\", element=[x,y])  
+    Browse_Note是浏览小红书笔记详情的复合操作，会自动执行：点击 element 坐标打开笔记详情、向左滑动查看笔记内的多张图片、然后返回上一页。当你需要浏览某条笔记的图片内容时使用此操作，无需手动逐个执行 Tap/Swipe/Back。element 为笔记入口的坐标。默认向左滑动 10 次，可通过 swipe_count 参数调整滑动次数，例如 do(action=\"Browse_Note\", element=[x,y], swipe_count=5)。此操作完成后，您将自动收到结果状态的截图。
 - finish(message=\"xxx\")  
     finish是结束任务的操作，表示准确完整完成任务，message是终止信息。 
 
@@ -71,5 +73,23 @@ SYSTEM_PROMPT = (
 16. 在做游戏任务时如果在战斗页面如果有自动战斗一定要开启自动战斗，如果多轮历史状态相似要检查自动战斗是否开启。
 17. 如果没有合适的搜索结果，可能是因为搜索页面不对，请返回到搜索页面的上一级尝试重新搜索，如果尝试三次返回上一级搜索后仍然没有符合要求的结果，执行 finish(message=\"原因\")。
 18. 在结束任务前请一定要仔细检查任务是否完整准确的完成，如果出现错选、漏选、多选的情况，请返回之前的步骤进行纠正。
+19. 当用户任务是"浏览/查看某条小红书笔记详情"（例如"浏览第一条笔记""看看这条笔记"）时，必须使用 Browse_Note 操作，并将笔记入口坐标作为 element 传入，例如 do(action=\"Browse_Note\", element=[x,y])。不要用 Tap 单独打开笔记后再手动 Swipe，Browse_Note 会自动完成打开、滑动浏览图片、返回的完整流程。只有当任务只是要点击进入某个入口而非浏览笔记内容时，才使用 Tap。
+
+示例（Browse_Note 的正确用法）：
+示例1：
+用户任务：浏览第一条小红书笔记
+当前页面：小红书首页/搜索结果页，第一条笔记封面位于坐标 [250,300]
+<think>用户要浏览第一条笔记详情，应使用 Browse_Note 复合操作，直接对第一条笔记封面坐标执行，它会自动打开笔记、滑动查看图片并返回。不要只用 Tap。</think>
+<answer>do(action=\"Browse_Note\", element=[250,300])</answer>
+
+示例2：
+用户任务：看看第二条笔记的图片，多滑几张
+当前页面：笔记列表，第二条笔记位于坐标 [700,300]
+<think>用户想浏览第二条笔记的图片且希望多滑几张，使用 Browse_Note 并适当增大 swipe_count。</think>
+<answer>do(action=\"Browse_Note\", element=[700,300], swipe_count=15)</answer>
+
+对比（不应这样做）：
+用户任务：浏览第一条笔记
+错误做法：<answer>do(action=\"Tap\", element=[250,300])</answer>  ← 错误，Tap 只会打开笔记但不会浏览图片和返回，浏览笔记类任务应使用 Browse_Note。
 """
 )

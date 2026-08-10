@@ -61,6 +61,10 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
         # official Open-AutoGLM layout.
         self._pending_task: str | None = None
         self._pending_reference_images: list[dict[str, str]] = []
+        # 完整任务文本，用于确定性动作后处理（如浏览笔记意图提升为 Browse_Note）
+        self._task_text: str = ""
+        # 浏览笔记复合动作是否已触发，确保整个任务只自动提升一次
+        self._browse_note_promoted: bool = False
 
     def _get_default_system_prompt(self, lang: str) -> str:
         return get_system_prompt(lang)
@@ -77,6 +81,8 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
         # invariant that every LLM request carries the current screen first.
         self._pending_task = task
         self._pending_reference_images = (reference_images or []).copy()
+        self._task_text = task or ""
+        self._browse_note_promoted = False
 
     async def _execute_step(self) -> AsyncGenerator[dict[str, Any], None]:
         """执行单步：获取截图 → 流式调用 LLM → 解析文本 → 执行动作。"""
@@ -251,6 +257,9 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
                     logger.warning(f"Failed to parse action: {e}, treating as finish")
                 action = {"_metadata": "finish", "message": action_str}
 
+        # 4.5 确定性后处理：浏览笔记意图下将打开笔记的 Tap 提升为 Browse_Note
+        action, action_str = self._maybe_promote_browse_note(action, action_str)
+
         if self.agent_config.verbose:
             msgs = get_messages(self.agent_config.lang)
             logger.debug(f"🎯 {msgs['action']}:")
@@ -401,6 +410,49 @@ class AsyncGLMAgent(AsyncAgentBase, AsyncAgent):
 
         finally:
             await stream.close()
+
+    # 浏览笔记意图关键词：任务文本命中任一即视为"浏览/查看笔记详情"
+    _BROWSE_NOTE_KEYWORDS = ("浏览", "看看", "查看", "翻看", "browse", "view")
+    _NOTE_KEYWORDS = ("笔记", "note")
+
+    def _is_browse_note_intent(self) -> bool:
+        """判断当前任务是否为"浏览/查看某条笔记详情"意图。"""
+        text = self._task_text.lower()
+        has_note = any(k in text for k in self._NOTE_KEYWORDS)
+        has_browse = any(k in text for k in self._BROWSE_NOTE_KEYWORDS)
+        return has_note and has_browse
+
+    def _maybe_promote_browse_note(
+        self, action: dict[str, Any], action_str: str
+    ) -> tuple[dict[str, Any], str]:
+        """浏览笔记意图下，将首个"打开笔记"的 Tap 提升为 Browse_Note 复合动作。
+
+        仅在整个任务内自动提升一次（打开笔记那一下），保留模型定位到的坐标，
+        由 Browse_Note 自动完成打开、左滑浏览图片、返回的完整流程。
+        """
+        if self._browse_note_promoted:
+            return action, action_str
+        if action.get("_metadata") != "do" or action.get("action") != "Tap":
+            return action, action_str
+        if not self._is_browse_note_intent():
+            return action, action_str
+
+        element = action.get("element")
+        if not element:
+            return action, action_str
+
+        promoted: dict[str, Any] = {
+            "_metadata": "do",
+            "action": "Browse_Note",
+            "element": element,
+        }
+        self._browse_note_promoted = True
+        logger.info(
+            "Promoted Tap to Browse_Note for browse-note intent (element=%s)",
+            element,
+        )
+        new_action_str = f'do(action="Browse_Note", element={element})'
+        return promoted, new_action_str
 
     @staticmethod
     def _parse_raw_response(content: str) -> tuple[str, str]:
