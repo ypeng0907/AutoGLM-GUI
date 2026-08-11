@@ -1151,15 +1151,15 @@ export function ChatComponent() {
       <div className="flex-1 flex flex-col min-h-0 relative">
         {/* Mode Toggle - Floating Capsule */}
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
-          <div className="flex items-center gap-0.5 bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm rounded-full p-1 shadow-lg border border-slate-200 dark:border-slate-700">
+          <div className="flex items-center gap-1 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xl rounded-full p-1 shadow-lg shadow-slate-900/5 ring-1 ring-slate-200/80 dark:ring-slate-700/60">
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   onClick={() => setChatMode('classic')}
-                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
                     chatMode === 'classic'
-                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      ? 'bg-gradient-to-r from-[#1d9bf0] to-sky-500 text-white shadow-md shadow-[#1d9bf0]/25'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100/80 dark:hover:bg-slate-800/80'
                   }`}
                 >
                   <Sparkles className="w-4 h-4" />
@@ -1183,10 +1183,10 @@ export function ChatComponent() {
                   onClick={() => {
                     setChatMode('chatkit');
                   }}
-                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
                     chatMode === 'chatkit'
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      ? 'bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-md shadow-indigo-500/25'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100/80 dark:hover:bg-slate-800/80'
                   }`}
                 >
                   <Layers className="w-4 h-4" />
@@ -1211,27 +1211,21 @@ export function ChatComponent() {
         {/* Content area */}
         <div className="flex-1 flex items-stretch justify-center min-h-0 px-4 py-4 pt-16">
           {!currentDevice ? (
-            <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-950">
-              <div className="text-center">
-                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 mx-auto mb-4">
-                  <svg
-                    className="w-10 h-10 text-slate-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+            <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-slate-50 to-slate-100/60 dark:from-slate-950 dark:to-slate-900/40">
+              <div className="text-center animate-fade-in px-6">
+                <div className="relative mx-auto mb-6 w-24 h-24">
+                  <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-[#1d9bf0]/25 to-indigo-500/25 blur-xl" />
+                  <div className="relative flex h-24 w-24 items-center justify-center rounded-3xl bg-gradient-to-br from-[#1d9bf0] to-indigo-500 shadow-lg shadow-[#1d9bf0]/25">
+                    <Smartphone
+                      className="w-11 h-11 text-white"
                       strokeWidth={1.5}
-                      d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"
                     />
-                  </svg>
+                  </div>
                 </div>
-                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">
+                <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100 mb-2 tracking-tight">
                   {t.chat.welcomeTitle}
                 </h3>
-                <p className="text-slate-500 dark:text-slate-400">
+                <p className="text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
                   {t.chat.connectDevice}
                 </p>
               </div>
