@@ -1,14 +1,56 @@
 """Action handler for executing phone operations."""
 
+import base64
+import io
 import random
 from typing import Any
 from collections.abc import Callable
 
 from AutoGLM_GUI.adb.timing import TIMING_CONFIG
 from AutoGLM_GUI.device_protocol import DeviceProtocol
+from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.trace import trace_sleep, trace_span
 
 from .types import ActionResult
+
+
+# 滑动到底判定：两张截图缩略后平均像素差低于该阈值即视为"画面几乎未变"
+BROWSE_NOTE_SIMILAR_DIFF_THRESHOLD = 3.0
+_BROWSE_NOTE_THUMB_SIZE = (64, 64)
+
+
+def images_similar(
+    base64_a: str,
+    base64_b: str,
+    threshold: float = BROWSE_NOTE_SIMILAR_DIFF_THRESHOLD,
+) -> bool:
+    """判断两张 base64 截图是否几乎相同（用于检测滑动是否已到最后一张）。
+
+    做法：各自解码 -> 灰度 -> 缩略到固定小尺寸 -> 逐像素平均绝对差，
+    低于 threshold 认为画面基本未变化。任何异常都返回 False（不误判为到底）。
+    """
+    if not base64_a or not base64_b:
+        return False
+    try:
+        from PIL import Image
+
+        def _load(data: str) -> Image.Image:
+            raw = base64.b64decode(data)
+            img = Image.open(io.BytesIO(raw)).convert("L")
+            return img.resize(_BROWSE_NOTE_THUMB_SIZE)
+
+        img_a = _load(base64_a)
+        img_b = _load(base64_b)
+        pixels_a = list(img_a.getdata())
+        pixels_b = list(img_b.getdata())
+        if not pixels_a or len(pixels_a) != len(pixels_b):
+            return False
+        total = sum(abs(pa - pb) for pa, pb in zip(pixels_a, pixels_b))
+        avg_diff = total / len(pixels_a)
+        return avg_diff < threshold
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"images_similar failed, treat as not-similar: {e}")
+        return False
 
 
 class ActionHandler:
@@ -368,15 +410,34 @@ class ActionHandler:
             # 1) Tap 打开笔记（坐标加随机抖动）
             jx, jy = self._jitter(tap_x, tap_y, width, height, jitter)
             self.device.tap(jx, jy)
-            # 2) 向左 Swipe 滑动图片（起止坐标各自加随机抖动）
+            # 2) 向左 Swipe 滑动图片；滑到最后一张（画面不再变化）则提前停止
+            prev_shot = self._safe_screenshot()
             for _ in range(swipe_count):
                 sx, sy = self._jitter(start_x, start_y, width, height, jitter)
                 ex, ey = self._jitter(end_x, end_y, width, height, jitter)
                 self.device.swipe(sx, sy, ex, ey)
+                cur_shot = self._safe_screenshot()
+                if (
+                    prev_shot is not None
+                    and cur_shot is not None
+                    and images_similar(prev_shot, cur_shot)
+                ):
+                    # 画面几乎未变化，判定已到最后一张，停止本轮滑动
+                    break
+                prev_shot = cur_shot
             # 3) Back 返回
             self.device.back()
 
         return ActionResult(True, False)
+
+    def _safe_screenshot(self) -> str | None:
+        """获取当前截图的 base64；失败返回 None（不影响主流程）。"""
+        try:
+            shot = self.device.get_screenshot()
+            return shot.base64_data if shot else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Browse_Note screenshot failed: {e}")
+            return None
 
     @staticmethod
     def _default_confirmation(message: str) -> bool:

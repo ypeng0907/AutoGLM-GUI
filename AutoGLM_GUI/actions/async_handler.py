@@ -7,8 +7,10 @@ from collections.abc import Callable
 
 from AutoGLM_GUI.adb.timing import TIMING_CONFIG
 from AutoGLM_GUI.device_protocol import AsyncDeviceProtocol
+from AutoGLM_GUI.logger import logger
 from AutoGLM_GUI.trace import trace_sleep_async, trace_span
 
+from .handler import images_similar
 from .types import ActionResult
 
 
@@ -367,15 +369,34 @@ class AsyncActionHandler:
             # 1) Tap 打开笔记（坐标加随机抖动）
             jx, jy = self._jitter(tap_x, tap_y, width, height, jitter)
             await self.device.tap(jx, jy)
-            # 2) 向左 Swipe 滑动图片（起止坐标各自加随机抖动）
+            # 2) 向左 Swipe 滑动图片；滑到最后一张（画面不再变化）则提前停止
+            prev_shot = await self._safe_screenshot()
             for _ in range(swipe_count):
                 sx, sy = self._jitter(start_x, start_y, width, height, jitter)
                 ex, ey = self._jitter(end_x, end_y, width, height, jitter)
                 await self.device.swipe(sx, sy, ex, ey)
+                cur_shot = await self._safe_screenshot()
+                if (
+                    prev_shot is not None
+                    and cur_shot is not None
+                    and images_similar(prev_shot, cur_shot)
+                ):
+                    # 画面几乎未变化，判定已到最后一张，停止本轮滑动
+                    break
+                prev_shot = cur_shot
             # 3) Back 返回
             await self.device.back()
 
         return ActionResult(True, False)
+
+    async def _safe_screenshot(self) -> str | None:
+        """获取当前截图的 base64；失败返回 None（不影响主流程）。"""
+        try:
+            shot = await self.device.get_screenshot()
+            return shot.base64_data if shot else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Browse_Note screenshot failed: {e}")
+            return None
 
     @staticmethod
     def _default_confirmation(message: str) -> bool:
