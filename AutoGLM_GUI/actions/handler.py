@@ -356,11 +356,17 @@ class ActionHandler:
         )
 
     # === Composite Actions ===
-    BROWSE_NOTE_SWIPE_COUNT = 10
+    BROWSE_NOTE_SWIPE_COUNT = 30
     # 整套「打开+滑动+返回」流程的循环次数（写死）
     BROWSE_NOTE_REPEAT_COUNT = 3
     # 每次点击/滑动坐标的随机抖动范围（像素，±该值）
     BROWSE_NOTE_JITTER_PX = 8
+    # 滑动图片的时长（毫秒）：越小滑动越快。默认按距离计算约 1000-2000ms 偏慢，
+    # 这里显式指定一个较短时长以加快浏览图片的速度。
+    BROWSE_NOTE_SWIPE_DURATION_MS = 100
+    # 两次滑动之间的间隔（秒）随机范围：在 [min, max] 内取随机值，模拟真人操作节奏。
+    BROWSE_NOTE_SWIPE_DELAY_MIN_S = 0.3
+    BROWSE_NOTE_SWIPE_DELAY_MAX_S = 0.6
     # 向左滑动相对坐标（0-1000）：从屏幕右侧滑到左侧，保持在垂直中部
     _BROWSE_SWIPE_START = [850, 500]
     _BROWSE_SWIPE_END = [150, 500]
@@ -384,7 +390,7 @@ class ActionHandler:
 
         参数:
             element: 笔记入口的相对坐标 [x, y]（必填），用于打开笔记详情。
-            swipe_count: 向左滑动次数，可选，默认 10。
+            swipe_count: 向左滑动次数，可选，默认 30。
         """
         element = action.get("element")
         if not element:
@@ -415,7 +421,17 @@ class ActionHandler:
             for _ in range(swipe_count):
                 sx, sy = self._jitter(start_x, start_y, width, height, jitter)
                 ex, ey = self._jitter(end_x, end_y, width, height, jitter)
-                self.device.swipe(sx, sy, ex, ey)
+                self.device.swipe(
+                    sx,
+                    sy,
+                    ex,
+                    ey,
+                    duration_ms=self.BROWSE_NOTE_SWIPE_DURATION_MS,
+                    delay=random.uniform(
+                        self.BROWSE_NOTE_SWIPE_DELAY_MIN_S,
+                        self.BROWSE_NOTE_SWIPE_DELAY_MAX_S,
+                    ),
+                )
                 cur_shot = self._safe_screenshot()
                 if (
                     prev_shot is not None
