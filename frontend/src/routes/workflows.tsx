@@ -5,7 +5,10 @@ import {
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
+  runWorkflow,
+  getDevices,
   type Workflow,
+  type Device,
 } from '../api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,7 +22,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Plus, Edit, Trash2, Loader2, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+  Plus,
+  Edit,
+  Trash2,
+  Loader2,
+  ArrowUp,
+  ArrowDown,
+  Play,
+  MessageSquare,
+} from 'lucide-react';
 import { useTranslation } from '../lib/i18n-context';
 
 export const Route = createFileRoute('/workflows')({
@@ -180,6 +192,19 @@ export function WorkflowsComponent() {
   });
   const [saving, setSaving] = useState(false);
 
+  // Run-now dialog state
+  const [showRunDialog, setShowRunDialog] = useState(false);
+  const [runWorkflowTarget, setRunWorkflowTarget] = useState<Workflow | null>(
+    null
+  );
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [runDeviceSerials, setRunDeviceSerials] = useState<string[]>([]);
+  const [runExecutionMode, setRunExecutionMode] = useState<
+    'classic' | 'layered'
+  >('classic');
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
   const loadWorkflows = async () => {
     try {
       setLoading(true);
@@ -198,6 +223,55 @@ export function WorkflowsComponent() {
       loadWorkflows();
     });
   }, []);
+
+  const handleOpenRunDialog = async (workflow: Workflow) => {
+    setRunWorkflowTarget(workflow);
+    setRunDeviceSerials([]);
+    setRunExecutionMode('classic');
+    setRunError(null);
+    setShowRunDialog(true);
+    try {
+      const data = await getDevices();
+      setDevices(data);
+    } catch (error) {
+      console.error('Failed to load devices:', error);
+      setDevices([]);
+    }
+  };
+
+  const handleRunNow = async () => {
+    if (!runWorkflowTarget || runDeviceSerials.length === 0) {
+      setRunError(t.workflows.requireDevice);
+      return;
+    }
+    try {
+      setRunning(true);
+      setRunError(null);
+      const result = await runWorkflow(runWorkflowTarget.uuid, {
+        device_serialnos: runDeviceSerials,
+        execution_mode: runExecutionMode,
+      });
+      if (result.success) {
+        setShowRunDialog(false);
+      } else {
+        setRunError(result.message || t.workflows.runFailed);
+      }
+    } catch (error) {
+      console.error('Failed to run workflow:', error);
+      setRunError(t.workflows.runFailed);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleFillToChat = (workflow: Workflow) => {
+    try {
+      sessionStorage.setItem('workflow-prefill-text', workflow.text);
+    } catch (error) {
+      console.error('Failed to store prefill text:', error);
+    }
+    window.location.href = '/chat';
+  };
 
   const handleCreate = () => {
     setEditingWorkflow(null);
@@ -365,7 +439,23 @@ export function WorkflowsComponent() {
                     </div>
                   );
                 })()}
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => handleOpenRunDialog(workflow)}
+                  >
+                    <Play className="w-3 h-3 mr-1" />
+                    {t.workflows.runNow}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleFillToChat(workflow)}
+                  >
+                    <MessageSquare className="w-3 h-3 mr-1" />
+                    {t.workflows.fillToChat}
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -526,6 +616,108 @@ export function WorkflowsComponent() {
                 </>
               ) : (
                 t.common.save
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Run Now Dialog */}
+      <Dialog open={showRunDialog} onOpenChange={setShowRunDialog}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t.workflows.runDialogTitle}
+              {runWorkflowTarget ? ` - ${runWorkflowTarget.name}` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>{t.workflows.selectDevices}</Label>
+              {devices.length === 0 ? (
+                <p className="text-sm text-amber-600 dark:text-amber-400">
+                  {t.workflows.noOnlineDevices}
+                </p>
+              ) : (
+                <div className="border rounded-md p-2 space-y-1 max-h-52 overflow-y-auto">
+                  {devices.map(device => (
+                    <label
+                      key={device.serial}
+                      className="flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={runDeviceSerials.includes(device.serial)}
+                        onChange={e => {
+                          const checked = e.target.checked;
+                          setRunDeviceSerials(prev =>
+                            checked
+                              ? [...prev, device.serial]
+                              : prev.filter(s => s !== device.serial)
+                          );
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-sm">
+                        {device.model || device.serial}
+                      </span>
+                      {device.state === 'online' && (
+                        <span className="ml-auto w-2 h-2 bg-green-500 rounded-full" />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label>{t.workflows.executionMode}</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={
+                    runExecutionMode === 'classic' ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  onClick={() => setRunExecutionMode('classic')}
+                >
+                  {t.workflows.classicMode}
+                </Button>
+                <Button
+                  type="button"
+                  variant={
+                    runExecutionMode === 'layered' ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  onClick={() => setRunExecutionMode('layered')}
+                >
+                  {t.workflows.layeredMode}
+                </Button>
+              </div>
+            </div>
+            {runError && (
+              <p className="text-sm text-red-600 dark:text-red-400">
+                {runError}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRunDialog(false)}>
+              {t.common.cancel}
+            </Button>
+            <Button
+              onClick={handleRunNow}
+              disabled={runDeviceSerials.length === 0 || running}
+            >
+              {running ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  {t.workflows.runningLabel}
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4 mr-2" />
+                  {t.workflows.runNow}
+                </>
               )}
             </Button>
           </DialogFooter>

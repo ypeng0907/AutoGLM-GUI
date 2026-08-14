@@ -603,6 +603,47 @@ class WorkflowListResponse(BaseModel):
     workflows: list[WorkflowResponse]
 
 
+class WorkflowRunRequest(BaseModel):
+    """立即执行 Workflow 请求."""
+
+    device_serialnos: list[str] | None = None  # 直接指定设备列表
+    device_group_id: str | None = None  # 或指定设备分组
+    execution_mode: str = "classic"
+
+    @field_validator("device_serialnos")
+    @classmethod
+    def validate_devices(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in v or []:
+            s = raw.strip()
+            if not s or s in seen:
+                continue
+            normalized.append(s)
+            seen.add(s)
+        return normalized if normalized else None
+
+    @field_validator("execution_mode")
+    @classmethod
+    def validate_execution_mode(cls, v: str) -> str:
+        mode = v.strip()
+        if mode not in {"classic", "layered"}:
+            raise ValueError("execution_mode must be one of: classic, layered")
+        return mode
+
+
+class WorkflowRunResponse(BaseModel):
+    """立即执行 Workflow 响应."""
+
+    success: bool
+    message: str
+    total_count: int
+    enqueued_count: int
+    schedule_fire_id: str | None = None
+
+
 class RemoteDeviceInfo(BaseModel):
     """远程设备信息."""
 

@@ -901,6 +901,31 @@ export async function deleteWorkflow(uuid: string): Promise<void> {
   await axios.delete(`/api/workflows/${uuid}`);
 }
 
+export interface WorkflowRunRequest {
+  device_serialnos?: string[];
+  device_group_id?: string | null;
+  execution_mode?: 'classic' | 'layered';
+}
+
+export interface WorkflowRunResponse {
+  success: boolean;
+  message: string;
+  total_count: number;
+  enqueued_count: number;
+  schedule_fire_id?: string | null;
+}
+
+export async function runWorkflow(
+  uuid: string,
+  request: WorkflowRunRequest
+): Promise<WorkflowRunResponse> {
+  const res = await axios.post<WorkflowRunResponse>(
+    `/api/workflows/${uuid}/run`,
+    request
+  );
+  return res.data;
+}
+
 // ==================== Task API ====================
 
 export type TaskStatus =

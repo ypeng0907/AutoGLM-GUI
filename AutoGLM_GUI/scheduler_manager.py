@@ -352,48 +352,35 @@ class SchedulerManager:
         else:
             return task.device_serialnos
 
-    async def _execute_task(self, task_id: str) -> None:
-        task = self._tasks.get(task_id)
-        if not task:
-            logger.warning(f"Task {task_id} not found for execution")
-            return
+    async def _dispatch_workflow_run(
+        self,
+        *,
+        workflow_uuid: str,
+        device_serialnos: list[str],
+        execution_mode: str,
+        source: str,
+        scheduled_task_id: str | None,
+        task_name: str,
+    ) -> tuple[int, int, str]:
+        """分发 workflow 执行到目标设备（在线设备入队，离线设备记录失败）.
 
-        # 解析目标设备列表
-        device_serialnos = self._resolve_device_serialnos(task)
-
-        logger.info(
-            f"Executing scheduled task: {task.name} on {len(device_serialnos)} device(s)"
-        )
-
+        Returns:
+            tuple[int, int, str]: (已入队数量, 目标设备总数, 结果消息)
+        """
         from AutoGLM_GUI.device_manager import DeviceManager
         from AutoGLM_GUI.task_manager import task_manager
         from AutoGLM_GUI.task_store import TaskStatus, task_store
         from AutoGLM_GUI.workflow_manager import workflow_manager
 
-        workflow = workflow_manager.get_workflow(task.workflow_uuid)
+        workflow = workflow_manager.get_workflow(workflow_uuid)
         if not workflow:
-            self._record_run(
-                task=task,
-                status="failure",
-                message="Workflow not found",
-                success_count=0,
-                total_count=len(device_serialnos),
-            )
-            return
-
-        device_manager = DeviceManager.get_instance()
+            return 0, len(device_serialnos), "Workflow not found"
 
         total_count = len(device_serialnos)
         if total_count == 0:
-            self._record_run(
-                task=task,
-                status="failure",
-                message="No devices selected",
-                success_count=0,
-                total_count=0,
-            )
-            return
+            return 0, 0, "No devices selected"
 
+        device_manager = DeviceManager.get_instance()
         online_devices = {
             device.serial: device
             for device in device_manager.get_devices()
@@ -404,7 +391,7 @@ class SchedulerManager:
         created_count = 0
         executor_key = (
             "scheduled_layered_workflow"
-            if task.execution_mode == "layered"
+            if execution_mode == "layered"
             else "scheduled_workflow"
         )
         for serialno in device_serialnos:
@@ -413,10 +400,10 @@ class SchedulerManager:
                 message = "Device offline"
                 failed_task = await asyncio.to_thread(
                     task_store.create_task_run,
-                    source="scheduled",
+                    source=source,
                     executor_key=executor_key,
-                    scheduled_task_id=task.id,
-                    workflow_uuid=task.workflow_uuid,
+                    scheduled_task_id=scheduled_task_id,
+                    workflow_uuid=workflow_uuid,
                     schedule_fire_id=schedule_fire_id,
                     device_id=serialno,
                     device_serial=serialno,
@@ -437,13 +424,13 @@ class SchedulerManager:
                     step_count=0,
                 )
                 logger.warning(
-                    f"Scheduled task {task.name} skipped offline device {serialno}"
+                    f"Workflow run {task_name} skipped offline device {serialno}"
                 )
                 continue
 
             await task_manager.enqueue_scheduled_task(
-                scheduled_task_id=task.id,
-                workflow_uuid=task.workflow_uuid,
+                scheduled_task_id=scheduled_task_id,
+                workflow_uuid=workflow_uuid,
                 device_id=device.primary_device_id,
                 device_serial=device.serial,
                 input_text=workflow["text"],
@@ -453,17 +440,109 @@ class SchedulerManager:
             created_count += 1
 
         if created_count == 0:
+            return 0, total_count, "No online devices available"
+
+        message = f"Enqueued {created_count}/{total_count} task run(s)"
+        return created_count, total_count, message
+
+    async def run_workflow_now(
+        self,
+        workflow_uuid: str,
+        device_serialnos: list[str] | None = None,
+        device_group_id: str | None = None,
+        execution_mode: str = "classic",
+    ) -> dict[str, Any]:
+        """立即执行一个 workflow（不依赖定时调度）.
+
+        Args:
+            workflow_uuid: 目标 workflow UUID
+            device_serialnos: 直接指定的设备列表
+            device_group_id: 或指定的设备分组
+            execution_mode: 执行模式 classic / layered
+
+        Returns:
+            dict: 执行分发结果
+        """
+        from AutoGLM_GUI.workflow_manager import workflow_manager
+
+        workflow = workflow_manager.get_workflow(workflow_uuid)
+        if not workflow:
+            return {
+                "success": False,
+                "message": "Workflow not found",
+                "total_count": 0,
+                "enqueued_count": 0,
+            }
+
+        # 解析目标设备（复用分组解析逻辑）
+        if device_group_id:
+            temp_task = ScheduledTask(
+                name=workflow["name"],
+                workflow_uuid=workflow_uuid,
+                device_serialnos=[],
+                device_group_id=device_group_id,
+                cron_expression="0 0 * * *",
+                enabled=False,
+                execution_mode=execution_mode,
+            )
+            resolved = self._resolve_device_serialnos(temp_task)
+        else:
+            resolved = device_serialnos or []
+
+        logger.info(
+            f"Manual workflow run: {workflow['name']} on {len(resolved)} device(s)"
+        )
+
+        enqueued, total, message = await self._dispatch_workflow_run(
+            workflow_uuid=workflow_uuid,
+            device_serialnos=resolved,
+            execution_mode=execution_mode,
+            source="manual",
+            scheduled_task_id=None,
+            task_name=workflow["name"],
+        )
+
+        return {
+            "success": enqueued > 0,
+            "message": message,
+            "total_count": total,
+            "enqueued_count": enqueued,
+        }
+
+    async def _execute_task(self, task_id: str) -> None:
+        task = self._tasks.get(task_id)
+        if not task:
+            logger.warning(f"Task {task_id} not found for execution")
+            return
+
+        # 解析目标设备列表
+        device_serialnos = self._resolve_device_serialnos(task)
+
+        logger.info(
+            f"Executing scheduled task: {task.name} on {len(device_serialnos)} device(s)"
+        )
+
+        enqueued, total, message = await self._dispatch_workflow_run(
+            workflow_uuid=task.workflow_uuid,
+            device_serialnos=device_serialnos,
+            execution_mode=task.execution_mode,
+            source="scheduled",
+            scheduled_task_id=task.id,
+            task_name=task.name,
+        )
+
+        if enqueued == 0:
             self._record_run(
                 task=task,
                 status="failure",
-                message="No online devices available",
+                message=message,
                 success_count=0,
-                total_count=total_count,
+                total_count=total,
             )
             return
 
         logger.info(
-            f"Scheduled task {task.name} enqueued {created_count}/{total_count} task run(s)"
+            f"Scheduled task {task.name} enqueued {enqueued}/{total} task run(s)"
         )
 
     def _record_run(

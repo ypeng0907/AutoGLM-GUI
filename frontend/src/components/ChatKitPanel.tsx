@@ -287,6 +287,19 @@ export function ChatKitPanel({
   // Chat state
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [input, setInput] = React.useState('');
+  // Consume workflow prefill text (set from the Workflows page "Fill to Chat")
+  React.useEffect(() => {
+    if (isVisible === false) return;
+    try {
+      const prefill = sessionStorage.getItem('workflow-prefill-text');
+      if (prefill) {
+        setInput(prefill);
+        sessionStorage.removeItem('workflow-prefill-text');
+      }
+    } catch (error) {
+      console.error('Failed to read prefill text:', error);
+    }
+  }, [isVisible]);
   const [loading, setLoading] = React.useState(false);
   const [aborting, setAborting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
