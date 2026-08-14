@@ -413,6 +413,9 @@ export const en = {
     requireDevice: 'Please select at least one device',
     backToForm: 'Back',
     liveExecutionTitle: 'Execution Progress',
+    stop: 'Stop',
+    stopping: 'Stopping',
+    stopAll: 'Stop All',
   },
   chatkit: {
     title: 'AI Assistant',

@@ -402,6 +402,9 @@ export const zh = {
     requireDevice: '请至少选择一个设备',
     backToForm: '返回',
     liveExecutionTitle: '执行进度',
+    stop: '停止',
+    stopping: '停止中',
+    stopAll: '全部停止',
   },
   chatkit: {
     title: 'AI 助手',

@@ -8,6 +8,7 @@ import {
   runWorkflow,
   getDevices,
   streamTaskEvents,
+  cancelTaskRun,
   type Workflow,
   type Device,
   type WorkflowRunTaskInfo,
@@ -38,6 +39,7 @@ import {
   XCircle,
   Bot,
   ChevronLeft,
+  Square,
 } from 'lucide-react';
 import { useTranslation } from '../lib/i18n-context';
 
@@ -218,6 +220,9 @@ export function WorkflowsComponent() {
     Record<string, TaskEventRecordResponse[]>
   >({});
   const [taskStatuses, setTaskStatuses] = useState<Record<string, string>>({});
+  const [stoppingTasks, setStoppingTasks] = useState<Record<string, boolean>>(
+    {}
+  );
   const streamsRef = useRef<Array<{ close: () => void }>>([]);
 
   const closeAllStreams = () => {
@@ -231,6 +236,7 @@ export function WorkflowsComponent() {
     setRunTasks([]);
     setTaskEvents({});
     setTaskStatuses({});
+    setStoppingTasks({});
     setRunError(null);
     setRunning(false);
   };
@@ -308,6 +314,28 @@ export function WorkflowsComponent() {
     );
     streamsRef.current.push(stream);
   };
+
+  const handleStopTask = async (taskId: string) => {
+    setStoppingTasks(prev => ({ ...prev, [taskId]: true }));
+    try {
+      await cancelTaskRun(taskId);
+    } catch (error) {
+      console.error('Failed to stop task:', error);
+      // Roll back the stopping flag so the user can retry.
+      setStoppingTasks(prev => ({ ...prev, [taskId]: false }));
+    }
+  };
+
+  const handleStopAll = async () => {
+    const activeIds = runTasks
+      .map(task => task.task_id)
+      .filter(id => isTaskActive(taskStatuses[id] || ''));
+    await Promise.all(activeIds.map(id => handleStopTask(id)));
+  };
+
+  const hasActiveTask = runTasks.some(task =>
+    isTaskActive(taskStatuses[task.task_id] || task.status)
+  );
 
   const handleRunNow = async () => {
     if (!runWorkflowTarget || runDeviceSerials.length === 0) {
@@ -827,12 +855,16 @@ export function WorkflowsComponent() {
                     task={task}
                     events={taskEvents[task.task_id] || []}
                     status={taskStatuses[task.task_id] || task.status}
+                    stopping={!!stoppingTasks[task.task_id]}
+                    onStop={() => handleStopTask(task.task_id)}
                     labels={{
                       thinking: t.historyPage.thinkingLabel || 'Thinking',
                       action: t.historyPage.actionLabel || 'Action',
                       result: t.historyPage.resultLabel || 'Result',
                       running: t.workflows.runningLabel,
                       waiting: t.workflows.runningLabel,
+                      stop: t.workflows.stop,
+                      stopping: t.workflows.stopping,
                     }}
                   />
                 ))}
@@ -841,11 +873,20 @@ export function WorkflowsComponent() {
                 <Button
                   variant="outline"
                   onClick={() => resetRunState()}
+                  disabled={hasActiveTask}
                 >
                   <ChevronLeft className="w-4 h-4 mr-2" />
                   {t.workflows.backToForm}
                 </Button>
-                <Button onClick={() => handleRunDialogOpenChange(false)}>
+                {hasActiveTask && (
+                  <Button variant="destructive" onClick={handleStopAll}>
+                    <Square className="w-4 h-4 mr-2" />
+                    {t.workflows.stopAll}
+                  </Button>
+                )}
+                <Button
+                  onClick={() => handleRunDialogOpenChange(false)}
+                >
                   {t.common.confirm}
                 </Button>
               </DialogFooter>
@@ -861,12 +902,16 @@ interface RunTaskProgressProps {
   task: WorkflowRunTaskInfo;
   events: TaskEventRecordResponse[];
   status: string;
+  stopping: boolean;
+  onStop: () => void;
   labels: {
     thinking: string;
     action: string;
     result: string;
     running: string;
     waiting: string;
+    stop: string;
+    stopping: string;
   };
 }
 
@@ -874,6 +919,8 @@ function RunTaskProgress({
   task,
   events,
   status,
+  stopping,
+  onStop,
   labels,
 }: RunTaskProgressProps) {
   const isActive = status === 'QUEUED' || status === 'RUNNING';
@@ -946,10 +993,26 @@ function RunTaskProgress({
           </span>
         </div>
         {isActive ? (
-          <span className="flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            {labels.running}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              {labels.running}
+            </span>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={onStop}
+              disabled={stopping}
+            >
+              {stopping ? (
+                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+              ) : (
+                <Square className="w-3 h-3 mr-1" />
+              )}
+              {stopping ? labels.stopping : labels.stop}
+            </Button>
+          </div>
         ) : isSuccess ? (
           <CheckCircle className="w-4 h-4 text-green-500" />
         ) : isFailed ? (
