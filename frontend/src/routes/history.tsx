@@ -211,6 +211,7 @@ export function HistoryComponent() {
       chat: t.historyPage.source.chat,
       layered: t.historyPage.source.layered,
       scheduled: t.historyPage.source.scheduled,
+      manual: t.historyPage.source.manual,
     };
     return sourceMap[source] || source;
   };
@@ -223,6 +224,8 @@ export function HistoryComponent() {
         return 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300';
       case 'scheduled':
         return 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300';
+      case 'manual':
+        return 'bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300';
       default:
         return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
     }

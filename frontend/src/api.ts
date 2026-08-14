@@ -907,12 +907,20 @@ export interface WorkflowRunRequest {
   execution_mode?: 'classic' | 'layered';
 }
 
+export interface WorkflowRunTaskInfo {
+  task_id: string;
+  device_serial: string;
+  device_id: string;
+  status: string;
+}
+
 export interface WorkflowRunResponse {
   success: boolean;
   message: string;
   total_count: number;
   enqueued_count: number;
   schedule_fire_id?: string | null;
+  tasks: WorkflowRunTaskInfo[];
 }
 
 export async function runWorkflow(

@@ -238,6 +238,12 @@ def _build_history_record_from_task(
         task = scheduler_manager.get_task(str(record["scheduled_task_id"]))
         if task is not None:
             source_detail = task.name
+    elif record["source"] == "manual" and record.get("workflow_uuid"):
+        from AutoGLM_GUI.workflow_manager import workflow_manager
+
+        workflow = workflow_manager.get_workflow(str(record["workflow_uuid"]))
+        if workflow is not None:
+            source_detail = workflow["name"]
 
     final_message = (
         record.get("final_message")

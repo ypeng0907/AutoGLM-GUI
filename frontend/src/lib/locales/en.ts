@@ -411,6 +411,8 @@ export const en = {
     runFailed: 'Failed to submit execution',
     runningLabel: 'Running',
     requireDevice: 'Please select at least one device',
+    backToForm: 'Back',
+    liveExecutionTitle: 'Execution Progress',
   },
   chatkit: {
     title: 'AI Assistant',
@@ -442,6 +444,7 @@ export const en = {
       chat: 'Chat',
       layered: 'Layered Agent',
       scheduled: 'Scheduled Task',
+      manual: 'Manual Run',
     },
     loadMore: 'Load More',
     loading: 'Loading...',

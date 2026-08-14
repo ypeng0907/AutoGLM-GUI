@@ -190,17 +190,18 @@ class TaskManager:
     async def enqueue_scheduled_task(
         self,
         *,
-        scheduled_task_id: str,
+        scheduled_task_id: str | None,
         workflow_uuid: str,
         device_id: str,
         device_serial: str,
         input_text: str,
         schedule_fire_id: str,
         executor_key: str = "scheduled_workflow",
+        source: str = "scheduled",
     ) -> TaskRecord:
         task = await asyncio.to_thread(
             self.store.create_task_run,
-            source="scheduled",
+            source=source,
             executor_key=executor_key,
             scheduled_task_id=scheduled_task_id,
             workflow_uuid=workflow_uuid,
@@ -832,7 +833,7 @@ class TaskManager:
             task,
             session_id=str(task["id"]),
             clear_session_after_run=True,
-            metrics_source="scheduled",
+            metrics_source=str(task.get("source") or "scheduled"),
         )
 
     async def _execute_scheduled_workflow(self, task: TaskRecord) -> None:
@@ -843,6 +844,9 @@ class TaskManager:
         task_id = str(task["id"])
         device_id = str(task["device_id"])
         context = "scheduled"
+        # Distinguish manually-triggered workflow runs from scheduled ones so the
+        # history/trace records reflect the correct source.
+        run_source = str(task.get("source") or "scheduled")
         trace_id = trace_module.create_trace_id()
         start_perf = time.perf_counter()
         acquired = False
@@ -858,7 +862,7 @@ class TaskManager:
                 await self._write_replay_task_start(
                     task=task,
                     trace_id=trace_id,
-                    source="scheduled",
+                    source=run_source,
                 )
                 acquired = await manager.acquire_device_async(
                     device_id,
@@ -900,7 +904,7 @@ class TaskManager:
                                 payload=event_data,
                                 role="assistant",
                                 trace_id=trace_id,
-                                replay_source="scheduled",
+                                replay_source=run_source,
                                 task=task,
                             )
                         elif event_type == "step":
@@ -920,7 +924,7 @@ class TaskManager:
                                 payload=event_data,
                                 role="assistant",
                                 trace_id=trace_id,
-                                replay_source="scheduled",
+                                replay_source=run_source,
                                 task=task,
                             )
                         elif event_type == "done":
@@ -956,7 +960,7 @@ class TaskManager:
                                 },
                                 role="assistant",
                                 trace_id=trace_id,
-                                replay_source="scheduled",
+                                replay_source=run_source,
                                 task=task,
                             )
                         elif event_type == "cancelled":
@@ -1026,7 +1030,7 @@ class TaskManager:
             final_message=final_message,
             stop_reason=stop_reason,
             step_count=step_count,
-            metrics_source="scheduled",
+            metrics_source=run_source,
             start_perf=start_perf,
         )
 

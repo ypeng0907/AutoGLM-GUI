@@ -634,6 +634,15 @@ class WorkflowRunRequest(BaseModel):
         return mode
 
 
+class WorkflowRunTaskInfo(BaseModel):
+    """立即执行 Workflow 时单个设备的任务信息."""
+
+    task_id: str
+    device_serial: str
+    device_id: str
+    status: str
+
+
 class WorkflowRunResponse(BaseModel):
     """立即执行 Workflow 响应."""
 
@@ -642,6 +651,7 @@ class WorkflowRunResponse(BaseModel):
     total_count: int
     enqueued_count: int
     schedule_fire_id: str | None = None
+    tasks: list[WorkflowRunTaskInfo] = []
 
 
 class RemoteDeviceInfo(BaseModel):

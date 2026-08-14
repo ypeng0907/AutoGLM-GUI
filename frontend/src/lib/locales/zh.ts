@@ -400,6 +400,8 @@ export const zh = {
     runFailed: '执行提交失败',
     runningLabel: '执行中',
     requireDevice: '请至少选择一个设备',
+    backToForm: '返回',
+    liveExecutionTitle: '执行进度',
   },
   chatkit: {
     title: 'AI 助手',
@@ -429,6 +431,7 @@ export const zh = {
       chat: '对话',
       layered: '分层代理',
       scheduled: '定时任务',
+      manual: '手动执行',
     },
     loadMore: '加载更多',
     loading: '加载中...',

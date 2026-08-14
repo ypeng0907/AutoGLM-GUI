@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   listWorkflows,
   createWorkflow,
@@ -7,8 +7,11 @@ import {
   deleteWorkflow,
   runWorkflow,
   getDevices,
+  streamTaskEvents,
   type Workflow,
   type Device,
+  type WorkflowRunTaskInfo,
+  type TaskEventRecordResponse,
 } from '../api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,6 +34,10 @@ import {
   ArrowDown,
   Play,
   MessageSquare,
+  CheckCircle,
+  XCircle,
+  Bot,
+  ChevronLeft,
 } from 'lucide-react';
 import { useTranslation } from '../lib/i18n-context';
 
@@ -204,6 +211,29 @@ export function WorkflowsComponent() {
   >('classic');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  // Live execution state
+  const [runPhase, setRunPhase] = useState<'form' | 'running'>('form');
+  const [runTasks, setRunTasks] = useState<WorkflowRunTaskInfo[]>([]);
+  const [taskEvents, setTaskEvents] = useState<
+    Record<string, TaskEventRecordResponse[]>
+  >({});
+  const [taskStatuses, setTaskStatuses] = useState<Record<string, string>>({});
+  const streamsRef = useRef<Array<{ close: () => void }>>([]);
+
+  const closeAllStreams = () => {
+    streamsRef.current.forEach(s => s.close());
+    streamsRef.current = [];
+  };
+
+  const resetRunState = () => {
+    closeAllStreams();
+    setRunPhase('form');
+    setRunTasks([]);
+    setTaskEvents({});
+    setTaskStatuses({});
+    setRunError(null);
+    setRunning(false);
+  };
 
   const loadWorkflows = async () => {
     try {
@@ -228,7 +258,7 @@ export function WorkflowsComponent() {
     setRunWorkflowTarget(workflow);
     setRunDeviceSerials([]);
     setRunExecutionMode('classic');
-    setRunError(null);
+    resetRunState();
     setShowRunDialog(true);
     try {
       const data = await getDevices();
@@ -237,6 +267,46 @@ export function WorkflowsComponent() {
       console.error('Failed to load devices:', error);
       setDevices([]);
     }
+  };
+
+  const isTaskActive = (status: string): boolean =>
+    status === 'QUEUED' || status === 'RUNNING';
+
+  const subscribeTaskStream = (taskId: string) => {
+    const stream = streamTaskEvents(
+      taskId,
+      event => {
+        setTaskEvents(prev => ({
+          ...prev,
+          [taskId]: [...(prev[taskId] || []), event],
+        }));
+        if (event.event_type === 'done') {
+          const success = event.payload.success === true;
+          setTaskStatuses(prev => ({
+            ...prev,
+            [taskId]: success ? 'SUCCEEDED' : 'FAILED',
+          }));
+        } else if (event.event_type === 'error') {
+          setTaskStatuses(prev => ({ ...prev, [taskId]: 'FAILED' }));
+        } else if (event.event_type === 'cancelled') {
+          setTaskStatuses(prev => ({ ...prev, [taskId]: 'CANCELLED' }));
+        } else {
+          setTaskStatuses(prev =>
+            prev[taskId] && !isTaskActive(prev[taskId])
+              ? prev
+              : { ...prev, [taskId]: 'RUNNING' }
+          );
+        }
+      },
+      () => {
+        setTaskStatuses(prev =>
+          prev[taskId] && !isTaskActive(prev[taskId])
+            ? prev
+            : { ...prev, [taskId]: 'FAILED' }
+        );
+      }
+    );
+    streamsRef.current.push(stream);
   };
 
   const handleRunNow = async () => {
@@ -251,17 +321,37 @@ export function WorkflowsComponent() {
         device_serialnos: runDeviceSerials,
         execution_mode: runExecutionMode,
       });
-      if (result.success) {
-        setShowRunDialog(false);
-      } else {
+      if (!result.success && result.tasks.length === 0) {
         setRunError(result.message || t.workflows.runFailed);
+        setRunning(false);
+        return;
       }
+      // Enter live-view phase and subscribe to each device's event stream.
+      setRunTasks(result.tasks);
+      const initialStatuses: Record<string, string> = {};
+      result.tasks.forEach(task => {
+        initialStatuses[task.task_id] = task.status;
+      });
+      setTaskStatuses(initialStatuses);
+      setRunPhase('running');
+      result.tasks.forEach(task => {
+        if (isTaskActive(task.status)) {
+          subscribeTaskStream(task.task_id);
+        }
+      });
     } catch (error) {
       console.error('Failed to run workflow:', error);
       setRunError(t.workflows.runFailed);
     } finally {
       setRunning(false);
     }
+  };
+
+  const handleRunDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      resetRunState();
+    }
+    setShowRunDialog(open);
   };
 
   const handleFillToChat = (workflow: Workflow) => {
@@ -623,106 +713,314 @@ export function WorkflowsComponent() {
       </Dialog>
 
       {/* Run Now Dialog */}
-      <Dialog open={showRunDialog} onOpenChange={setShowRunDialog}>
-        <DialogContent className="sm:max-w-[520px]">
+      <Dialog open={showRunDialog} onOpenChange={handleRunDialogOpenChange}>
+        <DialogContent className="sm:max-w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader>
             <DialogTitle>
               {t.workflows.runDialogTitle}
               {runWorkflowTarget ? ` - ${runWorkflowTarget.name}` : ''}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label>{t.workflows.selectDevices}</Label>
-              {devices.length === 0 ? (
-                <p className="text-sm text-amber-600 dark:text-amber-400">
-                  {t.workflows.noOnlineDevices}
-                </p>
-              ) : (
-                <div className="border rounded-md p-2 space-y-1 max-h-52 overflow-y-auto">
-                  {devices.map(device => (
-                    <label
-                      key={device.serial}
-                      className="flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer"
+
+          {runPhase === 'form' ? (
+            <>
+              <div className="space-y-4 py-2 overflow-y-auto">
+                <div className="space-y-2">
+                  <Label>{t.workflows.selectDevices}</Label>
+                  {devices.length === 0 ? (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">
+                      {t.workflows.noOnlineDevices}
+                    </p>
+                  ) : (
+                    <div className="border rounded-md p-2 space-y-1 max-h-52 overflow-y-auto">
+                      {devices.map(device => (
+                        <label
+                          key={device.serial}
+                          className="flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={runDeviceSerials.includes(device.serial)}
+                            onChange={e => {
+                              const checked = e.target.checked;
+                              setRunDeviceSerials(prev =>
+                                checked
+                                  ? [...prev, device.serial]
+                                  : prev.filter(s => s !== device.serial)
+                              );
+                            }}
+                            className="rounded border-gray-300"
+                          />
+                          <span className="text-sm">
+                            {device.model || device.serial}
+                          </span>
+                          {device.state === 'online' && (
+                            <span className="ml-auto w-2 h-2 bg-green-500 rounded-full" />
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>{t.workflows.executionMode}</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant={
+                        runExecutionMode === 'classic' ? 'default' : 'outline'
+                      }
+                      size="sm"
+                      onClick={() => setRunExecutionMode('classic')}
                     >
-                      <input
-                        type="checkbox"
-                        checked={runDeviceSerials.includes(device.serial)}
-                        onChange={e => {
-                          const checked = e.target.checked;
-                          setRunDeviceSerials(prev =>
-                            checked
-                              ? [...prev, device.serial]
-                              : prev.filter(s => s !== device.serial)
-                          );
-                        }}
-                        className="rounded border-gray-300"
-                      />
-                      <span className="text-sm">
-                        {device.model || device.serial}
-                      </span>
-                      {device.state === 'online' && (
-                        <span className="ml-auto w-2 h-2 bg-green-500 rounded-full" />
-                      )}
-                    </label>
-                  ))}
+                      {t.workflows.classicMode}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={
+                        runExecutionMode === 'layered' ? 'default' : 'outline'
+                      }
+                      size="sm"
+                      onClick={() => setRunExecutionMode('layered')}
+                    >
+                      {t.workflows.layeredMode}
+                    </Button>
+                  </div>
+                </div>
+                {runError && (
+                  <p className="text-sm text-red-600 dark:text-red-400">
+                    {runError}
+                  </p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => handleRunDialogOpenChange(false)}
+                >
+                  {t.common.cancel}
+                </Button>
+                <Button
+                  onClick={handleRunNow}
+                  disabled={runDeviceSerials.length === 0 || running}
+                >
+                  {running ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      {t.workflows.runningLabel}
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      {t.workflows.runNow}
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <div className="flex-1 overflow-y-auto space-y-4 py-2 pr-1">
+                {runTasks.map(task => (
+                  <RunTaskProgress
+                    key={task.task_id}
+                    task={task}
+                    events={taskEvents[task.task_id] || []}
+                    status={taskStatuses[task.task_id] || task.status}
+                    labels={{
+                      thinking: t.historyPage.thinkingLabel || 'Thinking',
+                      action: t.historyPage.actionLabel || 'Action',
+                      result: t.historyPage.resultLabel || 'Result',
+                      running: t.workflows.runningLabel,
+                      waiting: t.workflows.runningLabel,
+                    }}
+                  />
+                ))}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => resetRunState()}
+                >
+                  <ChevronLeft className="w-4 h-4 mr-2" />
+                  {t.workflows.backToForm}
+                </Button>
+                <Button onClick={() => handleRunDialogOpenChange(false)}>
+                  {t.common.confirm}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+interface RunTaskProgressProps {
+  task: WorkflowRunTaskInfo;
+  events: TaskEventRecordResponse[];
+  status: string;
+  labels: {
+    thinking: string;
+    action: string;
+    result: string;
+    running: string;
+    waiting: string;
+  };
+}
+
+function RunTaskProgress({
+  task,
+  events,
+  status,
+  labels,
+}: RunTaskProgressProps) {
+  const isActive = status === 'QUEUED' || status === 'RUNNING';
+  const isSuccess = status === 'SUCCEEDED';
+  const isFailed = status === 'FAILED' || status === 'CANCELLED';
+
+  // Build an ordered list of steps from the event stream. Thinking chunks are
+  // streamed *before* the action executes, so we accumulate them into the
+  // current (in-progress) step and finalize it when a "step" event arrives.
+  // This lets the UI show reasoning as it happens instead of only after a step
+  // completes.
+  interface DisplayStep {
+    step?: number;
+    thinking: string;
+    action?: Record<string, unknown>;
+    done: boolean;
+  }
+  const displaySteps: DisplayStep[] = [];
+  let current: DisplayStep = { thinking: '', done: false };
+  let finalMessage = '';
+  let hasFinal = false;
+
+  for (const event of events) {
+    if (event.event_type === 'thinking') {
+      const chunk =
+        typeof event.payload.chunk === 'string'
+          ? event.payload.chunk
+          : typeof event.payload.thinking === 'string'
+            ? event.payload.thinking
+            : '';
+      current.thinking += chunk;
+    } else if (event.event_type === 'step') {
+      current.step = event.payload.step as number | undefined;
+      const stepThinking = event.payload.thinking as string | undefined;
+      // Prefer the accumulated stream; fall back to the step's own thinking.
+      if (!current.thinking && stepThinking) {
+        current.thinking = stepThinking;
+      }
+      current.action = event.payload.action as
+        | Record<string, unknown>
+        | undefined;
+      current.done = true;
+      displaySteps.push(current);
+      current = { thinking: '', done: false };
+    } else if (
+      event.event_type === 'done' ||
+      event.event_type === 'error' ||
+      event.event_type === 'cancelled'
+    ) {
+      hasFinal = true;
+      if (typeof event.payload.message === 'string') {
+        finalMessage = event.payload.message;
+      }
+    }
+  }
+  // If there is an in-progress step with streamed thinking but no step event
+  // yet, surface it as a live "thinking" block.
+  if (current.thinking.trim().length > 0) {
+    displaySteps.push(current);
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+      {/* Device header */}
+      <div className="flex items-center justify-between px-3 py-2 bg-slate-100/80 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700">
+        <div className="flex items-center gap-2">
+          <Bot className="w-4 h-4 text-slate-500" />
+          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+            {task.device_serial}
+          </span>
+        </div>
+        {isActive ? (
+          <span className="flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            {labels.running}
+          </span>
+        ) : isSuccess ? (
+          <CheckCircle className="w-4 h-4 text-green-500" />
+        ) : isFailed ? (
+          <XCircle className="w-4 h-4 text-red-500" />
+        ) : null}
+      </div>
+
+      {/* Steps */}
+      <div className="p-3 space-y-3">
+        {displaySteps.length === 0 && !hasFinal ? (
+          <p className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
+            {isActive && <Loader2 className="w-3 h-3 animate-spin" />}
+            {labels.waiting}
+          </p>
+        ) : (
+          displaySteps.map((s, idx) => (
+            <div
+              key={`${task.task_id}-step-${idx}`}
+              className="space-y-2 border-l-2 border-slate-200 dark:border-slate-700 pl-3"
+            >
+              <p className="flex items-center gap-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                {`#${s.step ?? idx + 1}`}
+                {!s.done && <Loader2 className="w-3 h-3 animate-spin" />}
+              </p>
+              {s.thinking && (
+                <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded">
+                  <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-0.5">
+                    {labels.thinking}
+                  </p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
+                    {s.thinking}
+                  </p>
+                </div>
+              )}
+              {s.action && (
+                <div className="p-2 bg-amber-50 dark:bg-amber-900/20 rounded">
+                  <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400 mb-0.5">
+                    {labels.action}
+                  </p>
+                  <pre className="text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
+                    {JSON.stringify(s.action, null, 2)}
+                  </pre>
                 </div>
               )}
             </div>
-            <div className="space-y-2">
-              <Label>{t.workflows.executionMode}</Label>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant={
-                    runExecutionMode === 'classic' ? 'default' : 'outline'
-                  }
-                  size="sm"
-                  onClick={() => setRunExecutionMode('classic')}
-                >
-                  {t.workflows.classicMode}
-                </Button>
-                <Button
-                  type="button"
-                  variant={
-                    runExecutionMode === 'layered' ? 'default' : 'outline'
-                  }
-                  size="sm"
-                  onClick={() => setRunExecutionMode('layered')}
-                >
-                  {t.workflows.layeredMode}
-                </Button>
-              </div>
-            </div>
-            {runError && (
-              <p className="text-sm text-red-600 dark:text-red-400">
-                {runError}
-              </p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRunDialog(false)}>
-              {t.common.cancel}
-            </Button>
-            <Button
-              onClick={handleRunNow}
-              disabled={runDeviceSerials.length === 0 || running}
+          ))
+        )}
+
+        {hasFinal && finalMessage && (
+          <div
+            className={`p-2 rounded ${
+              isSuccess
+                ? 'bg-green-50 dark:bg-green-900/20'
+                : 'bg-red-50 dark:bg-red-900/20'
+            }`}
+          >
+            <p
+              className={`text-[11px] font-medium mb-0.5 ${
+                isSuccess
+                  ? 'text-green-600 dark:text-green-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}
             >
-              {running ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  {t.workflows.runningLabel}
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 mr-2" />
-                  {t.workflows.runNow}
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {labels.result}
+            </p>
+            <p className="text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap">
+              {finalMessage}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
